@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="et">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZipGame</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f5f5; color: #333; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+    .header { margin: 30px 0 10px 0; font-size: 28px; font-weight: bold; }
+    .info { margin-bottom: 10px; }
+    .game-container { background: #fff; border-radius: 8px; box-shadow: 0 2px 10px #0001; padding: 20px; position: relative; }
+    #gameCanvas { display: block; background: #fafafa; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 10px; }
+    .btn { padding: 8px 16px; border: 1px solid #ccc; border-radius: 4px; background: white; cursor: pointer; font-size: 14px; margin-right: 8px; }
+    .btn:hover { background: #f0f0f0; }
+    .win-message { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); background: #fff; border: 2px solid #27ae60; border-radius: 8px; padding: 30px 40px; text-align: center; z-index: 10; box-shadow: 0 4px 20px #0002; }
+    .win-message h2 { color: #27ae60; margin-bottom: 10px; }
+    @media (max-width: 500px) { #gameCanvas { width: 300px !important; height: 300px !important; } }
+  </style>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/css/bootstrap.min.css" integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+</head>
+<body>
+  <div class="header">Lihtne ZipGame</div>
+  <div class="info">Läbi joonega KÕIK ruudud järjest, alustades numbrist 1!</div>
+  <div class="game-container">
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+    <div class="win-message" id="winMessage">
+      <h2>Võitsid!</h2>
+      <p>Aeg: <span id="winTime">0</span> sekundit</p>
+      <button class="btn btn-success" onclick="newGame()">Järgmine tase</button>
+    </div>
+  </div>
+  <div style="margin-top:10px;">
+    <button class="btn btn-warning" onclick="newGame()">Uus mäng</button>
+    <button class="btn btn-danger" onclick="undo()">Tagasi</button>
+    <b><span id="timer">Aeg: 0s</span></b>
+  </div>
+  <script>
+    // Mängu seaded
+    const gridSize = 6;
+    const minNumbers = 6;
+    const maxNumbers = 12;
+    const minStep = 2; // min vahe numbrite vahel
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const cellSize = canvas.width / gridSize;
+    let path = [];
+    let numberPositions = [];
+    let drawnPath = [];
+    let isDrawing = false;
+    let lastGrid = null;
+    let timer = 0;
+    let timerInterval = null;
+    let gameWon = false;
+    let flashLast = false;
+    let flashCount = 0;
+    let flashTimer = null;
+
+    function shuffle(arr) {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    }
+
+    // Hamiltoni tee leidja (DFS, random)
+    function findHamiltonianPath() {
+      const total = gridSize * gridSize;
+      const dirs = shuffle([
+        {dx: 1, dy: 0}, {dx: -1, dy: 0}, {dx: 0, dy: 1}, {dx: 0, dy: -1}
+      ]);
+      let path = [];
+      let visited = Array.from({length: gridSize}, () => Array(gridSize).fill(false));
+      let found = false;
+      function dfs(x, y, depth) {
+        if (found) return;
+        path.push({x, y});
+        visited[y][x] = true;
+        if (depth === total) { found = true; return; }
+        for (const dir of shuffle(dirs)) {
+          const nx = x + dir.dx, ny = y + dir.dy;
+          if (nx >= 0 && nx < gridSize && ny >= 0 && ny < gridSize && !visited[ny][nx]) {
+            dfs(nx, ny, depth + 1);
+            if (found) return;
+          }
+        }
+        if (!found) { path.pop(); visited[y][x] = false; }
+      }
+      const startX = Math.floor(Math.random() * gridSize);
+      const startY = Math.floor(Math.random() * gridSize);
+      dfs(startX, startY, 1);
+      return found ? path : null;
+    }
+
+    // Numbrite hajutatud paigutus: iga kahe numbri vahel vähemalt minStep
+    function pickNumberPositions(path, minN, maxN, minStep) {
+      const total = path.length;
+      let n = Math.floor(Math.random() * (maxN - minN + 1)) + minN;
+      let positions = [0]; // alati algus
+      let lastIdx = 0;
+      for (let i = 1; i < n; i++) {
+        let nextIdx = lastIdx + minStep + Math.floor(Math.random() * (Math.floor((total - lastIdx - 1) / (n - i + 1)) + 1));
+        if (i === n - 1) nextIdx = total - 1; // viimane number lõppu
+        if (nextIdx >= total) nextIdx = total - 1;
+        if (nextIdx - lastIdx < minStep) nextIdx = lastIdx + minStep;
+        if (nextIdx >= total) nextIdx = total - 1;
+        positions.push(nextIdx);
+        lastIdx = nextIdx;
+        if (lastIdx >= total - 1) break;
+      }
+      // Kui lõpus on liiga vähe ruute, lisa rohkem numbreid
+      while (positions.length < maxN && positions[positions.length-1] < total - 1 - minStep) {
+        let nextIdx = positions[positions.length-1] + minStep;
+        if (nextIdx >= total) break;
+        positions.push(nextIdx);
+      }
+      // Eemalda duplikaadid ja sorteeri
+      return Array.from(new Set(positions)).sort((a, b) => a - b);
+    }
+
+    function generatePuzzle() {
+      let p;
+      do { p = findHamiltonianPath(); } while (!p);
+      // Hajutatud numbrite indeksid
+      const numberIndices = pickNumberPositions(p, minNumbers, maxNumbers, minStep);
+      path = p;
+      numberPositions = numberIndices.map((idx, i) => ({...path[idx], number: i+1}));
+      drawnPath = [numberPositions[0]];
+      gameWon = false;
+      document.getElementById('winMessage').style.display = 'none';
+      timer = 0;
+      updateTimer();
+      startTimer(); // Alusta taimeri kohe
+      draw();
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Ruudustik
+      ctx.strokeStyle = '#e0e0e0';
+      ctx.lineWidth = 8; // Ruudustiku joonte laius
+      for (let i = 0; i <= gridSize; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * cellSize, 0); ctx.lineTo(i * cellSize, canvas.height); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, i * cellSize); ctx.lineTo(canvas.width, i * cellSize); ctx.stroke();
+      }
+      // Arvuti Hamiltoni tee (adminile nähtav, õrn roosa)
+      
+      ctx.save();
+      ctx.globalAlpha = 0.25;
+      ctx.strokeStyle = '#e170b4';
+      ctx.lineWidth = 8;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(path[0].x * cellSize + cellSize/2, path[0].y * cellSize + cellSize/2);
+      for (let i = 1; i < path.length; i++) {
+        ctx.lineTo(path[i].x * cellSize + cellSize/2, path[i].y * cellSize + cellSize/2);
+      }
+      // ctx.stroke();
+      ctx.restore();
+      
+
+      // Mängija tee (paksem ja ümar)
+      if (drawnPath.length > 1) {
+        ctx.strokeStyle = '#8e44ad';
+        ctx.lineWidth = 20; // Tõmmatava joone laius on nüüd veel paksem
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(drawnPath[0].x * cellSize + cellSize/2, drawnPath[0].y * cellSize + cellSize/2);
+        for (let i = 1; i < drawnPath.length; i++) {
+          ctx.lineTo(drawnPath[i].x * cellSize + cellSize/2, drawnPath[i].y * cellSize + cellSize/2);
+        }
+        ctx.stroke();
+      }
+      // Numbrid
+      numberPositions.forEach((pos, idx) => {
+        if (flashLast && idx === numberPositions.length-1) {
+          drawNumber(pos.x, pos.y, pos.number, true);
+        } else {
+          drawNumber(pos.x, pos.y, pos.number, false);
+        }
+      });
+    }
+
+    function drawNumber(x, y, number, flash) {
+      const cx = x * cellSize + cellSize/2;
+      const cy = y * cellSize + cellSize/2;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, 18, 0, Math.PI*2);
+      ctx.fillStyle = flash ? '#ff3b3b' : '#333';
+      ctx.shadowColor = flash ? '#ff3b3b' : 'transparent';
+      ctx.shadowBlur = flash ? 16 : 0;
+      ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 16px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(number, cx, cy);
+    }
+
+    function getGrid(e) {
+      const rect = canvas.getBoundingClientRect();
+      const x = ((e.touches ? e.touches[0].clientX : e.clientX) - rect.left) * (canvas.width / rect.width);
+      const y = ((e.touches ? e.touches[0].clientY : e.clientY) - rect.top) * (canvas.height / rect.height);
+      let gx = Math.floor(x / cellSize);
+      let gy = Math.floor(y / cellSize);
+      // Piira ruudustiku sisse
+      if (gx < 0) gx = 0;
+      if (gy < 0) gy = 0;
+      if (gx >= gridSize) gx = gridSize - 1;
+      if (gy >= gridSize) gy = gridSize - 1;
+      return { x: gx, y: gy };
+    }
+
+    function isAdjacent(a, b) {
+      return (Math.abs(a.x-b.x) === 1 && a.y === b.y) || (Math.abs(a.y-b.y) === 1 && a.x === b.x);
+    }
+
+    function isOnDrawnPath(x, y) {
+      return drawnPath.some(p => p.x === x && p.y === y);
+    }
+
+    function handleStart(e) {
+      if (gameWon) return;
+      const grid = getGrid(e);
+      if (drawnPath.length === 1 && grid.x === drawnPath[0].x && grid.y === drawnPath[0].y) {
+        isDrawing = true;
+        lastGrid = grid;
+      } else if (drawnPath.length > 1 && grid.x === drawnPath[drawnPath.length-1].x && grid.y === drawnPath[drawnPath.length-1].y) {
+        isDrawing = true;
+        lastGrid = grid;
+      }
+    }
+
+    function handleMove(e) {
+      if (!isDrawing || gameWon) return;
+      const grid = getGrid(e);
+      const last = drawnPath[drawnPath.length-1];
+      
+      // Ära luba väljaspool ruudustikku liikuda
+      if (grid.x < 0 || grid.x >= gridSize || grid.y < 0 || grid.y >= gridSize) return;
+      
+      if ((grid.x !== last.x || grid.y !== last.y) && isAdjacent(grid, last)) {
+        // Kontrolli kas see on numbriga ruut
+        const numberAtGrid = numberPositions.find(pos => pos.x === grid.x && pos.y === grid.y);
+        
+        if (numberAtGrid) {
+          // Kui see on numbriga ruut, kontrolli järjekorda
+          const expectedNextNumber = getNextExpectedNumber();
+          const isAlreadyVisited = drawnPath.some(p => p.x === grid.x && p.y === grid.y);
+          
+          // Luba tagasi liikuda juba külastatud numbri peale, aga ära luba hüpata järgmise numbri üle
+          if (!isAlreadyVisited && numberAtGrid.number !== expectedNextNumber) {
+            // Vale järjekord - vilguta numbrit
+            flashWrongNumber(numberAtGrid);
+            return;
+          }
+        }
+        
+        // Kas üritad minna viimasesse numbrisse enne kui kõik ruudud läbitud?
+        const isLastNum = numberPositions.length > 1 && grid.x === numberPositions[numberPositions.length-1].x && grid.y === numberPositions[numberPositions.length-1].y;
+        if (isLastNum && drawnPath.length !== gridSize*gridSize-1) {
+          flashLastNumber();
+          return;
+        }
+        
+        // Kui juba käidud ruut, lõika sinna tagasi
+        const idx = drawnPath.findIndex(p => p.x === grid.x && p.y === grid.y);
+        if (idx !== -1) {
+          drawnPath = drawnPath.slice(0, idx + 1);
+        } else {
+          drawnPath.push({x: grid.x, y: grid.y});
+        }
+        lastGrid = grid;
+        draw();
+        checkWin();
+      }
+    }
+
+    function getNextExpectedNumber() {
+      // Leia kõik numbrid, mis on juba läbitud
+      const visitedNumbers = [];
+      for (const pos of drawnPath) {
+        const numberAtPos = numberPositions.find(np => np.x === pos.x && np.y === pos.y);
+        if (numberAtPos) {
+          visitedNumbers.push(numberAtPos.number);
+        }
+      }
+      // Järgmine oodatav number on suurim läbitud number + 1
+      return visitedNumbers.length > 0 ? Math.max(...visitedNumbers) + 1 : 1;
+    }
+
+    function flashWrongNumber(numberPos) {
+      if (flashTimer) return;
+      flashCount = 0;
+      let flashWrongPos = numberPos;
+      
+      const originalDraw = draw;
+      draw = function() {
+        originalDraw();
+        // Lisa vale numbri vilgutamine
+        if (flashCount % 2 === 0) {
+          drawNumber(flashWrongPos.x, flashWrongPos.y, flashWrongPos.number, true);
+        }
+      };
+      
+      flashTimer = setInterval(() => {
+        draw();
+        flashCount++;
+        if (flashCount > 5) {
+          clearInterval(flashTimer);
+          flashTimer = null;
+          draw = originalDraw;
+          draw();
+        }
+      }, 120);
+    }
+
+    function flashLastNumber() {
+      if (flashTimer) return;
+      flashCount = 0;
+      flashLast = true;
+      draw();
+      flashTimer = setInterval(() => {
+        flashLast = !flashLast;
+        draw();
+        flashCount++;
+        if (flashCount > 5) {
+          clearInterval(flashTimer);
+          flashTimer = null;
+          flashLast = false;
+          draw();
+        }
+      }, 120);
+    }
+
+    function handleEnd(e) {
+      isDrawing = false;
+      lastGrid = null;
+    }
+
+    function checkWin() {
+        // Kontrolli, kas kõik ruudud on läbitud
+        if (drawnPath.length !== gridSize * gridSize) {
+            return; // Ei ole veel kõiki ruute läbitud
+        }
+
+        // Kontrolli, kas kõik numbrid on läbitud õiges järjekorras
+        let maxVisitedNumber = 0;
+        for (let i = 0; i < drawnPath.length; i++) {
+            const currentCell = drawnPath[i];
+            const numberAtCell = numberPositions.find(pos => pos.x === currentCell.x && pos.y === currentCell.y);
+
+            if (numberAtCell) {
+                if (numberAtCell.number === maxVisitedNumber + 1) {
+                    maxVisitedNumber++;
+                } else if (numberAtCell.number <= maxVisitedNumber) {
+                    // Juba külastatud number, või number, mis peaks olema juba läbitud
+                    // See on ok, kui ei ole "hüpannud" järjekorrast
+                } else {
+                    // Vale numbri järjekord
+                    return; // Mängija on teinud vea
+                }
+            }
+        }
+
+        // Kui kõik numbrid on läbitud ja kõik ruudud on läbitud
+        if (maxVisitedNumber === numberPositions.length) {
+            win();
+        }
+    }
+
+    function win() {
+      gameWon = true;
+      stopTimer();
+      document.getElementById('winTime').textContent = timer;
+      document.getElementById('winMessage').style.display = 'block';
+    }
+
+    function newGame() {
+      generatePuzzle();
+    }
+
+    function undo() {
+      if (drawnPath.length > 1 && !gameWon) {
+        drawnPath.pop();
+        draw();
+      }
+    }
+
+    function startTimer() {
+      if (timerInterval) return;
+      timerInterval = setInterval(() => {
+        timer++;
+        updateTimer();
+      }, 1000);
+    }
+    function stopTimer() {
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    }
+    function updateTimer() {
+      document.getElementById('timer').textContent = 'Aeg: ' + timer + 's';
+    }
+
+    // Eventid
+    canvas.addEventListener('mousedown', handleStart);
+    canvas.addEventListener('mousemove', handleMove);
+    canvas.addEventListener('mouseup', handleEnd);
+    canvas.addEventListener('mouseleave', handleEnd);
+    canvas.addEventListener('touchstart', function(e){ e.preventDefault(); handleStart(e); });
+    canvas.addEventListener('touchmove', function(e){ e.preventDefault(); handleMove(e); });
+    canvas.addEventListener('touchend', function(e){ e.preventDefault(); handleEnd(e); });
+
+    // Init
+    generatePuzzle();
+  </script>
+</body>
+</html>
